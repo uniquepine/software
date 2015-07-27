@@ -1,21 +1,44 @@
-function a=GoFscore(TestResult)
-a1=[0 0 0 0 0 0];
-if strcmp(TestResult.KS.Result,'Pass')
-    a1(1)=1;
+%% RUNMONTECARLO
+%  
+
+function [aggs] = runMonteCarlo_revised(sevDist, lThres, freqDist,attloss, Nsim)
+ 
+        if strcmpi(sevDist.DistributionName, 'Gamma')
+        sevDist = sevDist.truncate(log(lThres), Inf);
+        else 
+        sevDist = sevDist.truncate(lThres, Inf);
+        end
+
+freq = freqDist.random(Nsim, 1); 
+m=memory;max_row=m.MaxPossibleArrayBytes/8.1;max_row=max_row/10000;
+% To be safe.  Dividing by a large nubmer will be safer.
+freq_batch = cell(1); j = 0;  cf = uint64(cumsum(freq)); 
+
+while  cf(end,1) > max_row;
+    j = j + 1;    ending_index = find(cf < max_row,1,'last');
+    freq_batch{j} = freq(1:ending_index);
+    freq = freq((1+ending_index):end);   cf = uint64(cumsum(freq));
 end
-if strcmp(TestResult.AD.Result,'Pass')
-    a1(2)=2;
-end
-if strcmp(TestResult.AD2.Result,'Pass')
-    a1(3)=2;
-end
-if strcmp(TestResult.CVM.Result,'Pass')
-    a1(4)=2;
-end
-if strcmp(TestResult.ADup.Result,'Pass')
-    a1(5)=3;
-end
-if strcmp(TestResult.AD2up.Result,'Pass')
-    a1(6)=3;
-end
-a=sum(a1);
+j = j + 1;    freq_batch{j} = freq;   aggs=[];
+
+
+parfor k=1:length(freq_batch)  % Works even without Parallel Toolbox
+ 
+     cf = cumsum(freq_batch{k});
+     losses = sevDist.random( cf(end) , 1); %%
+     if strcmpi(sevDist.DistributionName, 'Gamma'); losses = exp(losses); end
+     y = zeros(length(freq_batch{k}),1); 
+     y(1,1) = sum(losses(1:(cf(1))),1);
+
+    for j=2:length(cf)
+    st=1+cf(j-1);en=cf(j);y(j,1)=sum(losses(st:en,1));
+    end
+
+   aggs = [aggs; y]; 
+end    
+     
+aggs = aggs+attloss;
+
+
+    
+end % end of function
