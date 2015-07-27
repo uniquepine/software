@@ -1,0 +1,343 @@
+%% FITTRUNCATEDDISTRIBUTIONS
+% Performs truncated maximum likelihood estimation on a given dataset
+%   This function takes a single dataset (as a column vector) and computes
+%   the maximum likelihood estimate of each of the parameters of the
+%   specified distribution. The fitted distribution is then passed on as a
+%   probability distribution object.
+%
+%   If 'pdFit' is not provided, a naive fit is initially conducted to
+%   obtain reasonable starting parameters for the optimisation. If 'pdFit'
+%   is provided (i.e. when called from GOF tests), the parameter values
+%   from pd will be used as improved starting values.
+%
+%
+%   SYNTAX:
+%   [pd, warnings] = fitTruncatedDistributions(data,...
+%                                              dist,...
+%                                              lThres,...
+%                                              ControlVars,...
+%                                              pdFit)
+%
+%   CALLED BY (parents):
+%   gofTest
+%
+%   CALLS (children):
+%   truncDensity
+%
+%
+%   INPUTS:
+%   data:       Column vector of TRUNCATED loss data
+%   dist:       String naming the distribution to fit - can take the value
+%               'Lognormal', 'Weibull', 'Loggamma', 'Loglogistic', 'Burr'
+%   lThres:     Lower truncation threshold
+%   ControlVars:A structure containing control variables that is intialised
+%               in the call to controlVariables in mainModel.
+%   pdFit:      This is an optional input of a probability distribution
+%               object. It is only relevant when fitTruncatedDistributions
+%               is called from the GOF tests, as the initial parameter
+%               estimates can be used as better starting values for the
+%               optimisation thus reducing run time.
+%
+%   OUTPUTS:
+%   pd:         A probability distribution object of the desired type
+%               (dist). This object is derived from the
+%               prob.LognormalDistribution (or similar).
+%
+%   warnings:   A structure array which catches any suppressed warnings.
+%
+%   Author:     Aon UK Limited
+%   Date:       August 2014
+
+function [pd, warnings] = fitTruncatedDistributions_m(data,...
+    dist,...
+    lThres,...
+    ControlVars,...
+    pdFit)
+
+
+%% Settings Section
+% If we get the stats:mlecov:NonPosDefHessian warning then the fitted
+% distribution is not reliable and should not be returned. To handle this
+% warning, we turn it off and catch any situations in which the cov
+% matrix is NaN -- this is always the case if the warning is triggered.
+InitialWarningState = warning;
+warning('off','stats:mlecov:NonPosDefHessian');
+warning('off','stats:mle:IterLimit');
+warning('off','stats:mle:EvalLimit');
+warning('off','stats:addburr:NonPosDefHessian');
+
+
+% To catch the correct warnings, need to clear the last warning stored and
+% create a warnings structure
+lastwarn('');
+warnings = struct;
+
+
+% Specify the optimisation settings
+op = optimset('fminsearch');
+op.Display = 'off';
+if nargin < 5
+    op.MaxIter = ControlVars.FitTruncatedDistributions_m.InitialFit.MaxIter;
+    op.MaxFunEvals = ControlVars.FitTruncatedDistributions_m.InitialFit.MaxFunEvals;
+else
+    op.MaxIter = ControlVars.FitTruncatedDistributions_m.GofFit.MaxIter;
+    op.MaxFunEvals = ControlVars.FitTruncatedDistributions_m.GofFit.MaxFunEvals;
+end
+
+%% Constants
+nArgsForNaiveFit = 5;
+
+data = data(data >= lThres);
+%% Truncated Distributions Fit
+cens = zeros(length(data),1);
+freq = ones(length(data),1);
+
+switch dist
+    case 'Lognormal'
+        % Closed form solution to get starting values for truncated fit
+        if nargin < nArgsForNaiveFit
+            startParams = [mean(log(data(data>0))) std(log(data(data>0)))];
+        else
+            startParams = pdFit.ParameterValues;
+        end
+        % Get truncated pdf to optimize
+        logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, dist, lThres, [param1,param2], true);
+        % Compute truncated mle fit
+        [params]= mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'options',op);
+        % Catch any supressed warnings that arise
+        warnings = catchSupressedWarnings(warnings);
+        % compute and fill distribution object fields
+        nll = sum(-logPdfToOptimize(data,params(1),params(2)));
+        cov = mlecov(params,data,'logpdf',logPdfToOptimize);
+        warnings = catchSupressedWarnings(warnings);
+        pd = prob.LognormalDistribution.makeFitted(params,nll,cov,data,cens,freq);
+        
+    case 'Weibull'
+        
+        if nargin < nArgsForNaiveFit
+            startParams = mle(data,'distribution', dist);
+        else
+            startParams = pdFit.ParameterValues;
+        end
+        
+        logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, dist, lThres, [param1,param2], true);
+        
+        [params] = mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'lowerbound',[0 0],...
+            'options',op);
+        
+        warnings = catchSupressedWarnings(warnings);
+        
+        nll = sum(-logPdfToOptimize(data,params(1),params(2)));
+        cov = mlecov(params,data,'logpdf',logPdfToOptimize);
+        warnings = catchSupressedWarnings(warnings);
+        pd = prob.WeibullDistribution.makeFitted(params,nll,cov,data,cens,freq);
+        
+    case 'Loggamma'
+        data = data(data>1);
+        
+        if nargin < nArgsForNaiveFit
+            startParams = mle(log(data),'distribution', 'gamma');
+        else
+            startParams = pdFit.ParameterValues;
+        end
+        logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, dist, lThres, [param1,param2], true);
+        
+        [params] = mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'lowerbound',[0 0],...
+            'options',op);
+        
+        warnings = catchSupressedWarnings(warnings);
+        
+        nll = sum(-logPdfToOptimize((data),params(1),params(2)));
+        cov = mlecov(params,(data),'logpdf',logPdfToOptimize); 
+        warnings = catchSupressedWarnings(warnings);
+        pd = prob.GammaDistribution.makeFitted(params,nll,cov,data,cens,freq);
+        pd = LoggammaClass(pd);
+        
+        
+    case {'Loglogistic', 'Log-Logistic'}
+        dist = 'Loglogistic';
+        
+        if nargin < nArgsForNaiveFit
+            startParams = mle(data,'distribution', dist);
+        else
+            startParams = pdFit.ParameterValues;
+        end
+        
+        logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, dist, lThres, [param1,param2], true);
+        
+        [params] = mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'lowerbound',[-Inf 0],...
+            'options',op);
+        
+        warnings = catchSupressedWarnings(warnings);
+        
+        nll = sum(-logPdfToOptimize(data,params(1),params(2)));
+        cov = mlecov(params,data,'logpdf',logPdfToOptimize);
+        warnings = catchSupressedWarnings(warnings);
+        pd = prob.LoglogisticDistribution.makeFitted(params,nll,cov,data,cens,freq);
+        
+    case {'Burr','burr'}
+        
+        warning('off','MATLAB:nearlySingularMatrix')
+        
+        
+        if nargin < nArgsForNaiveFit
+            startParams = myBurrFit(data);
+        else
+            startParams = pdFit.ParameterValues;
+        end
+        
+        logPdfToOptimize = @(x,param1,param2,param3) ...
+            truncDensity(x, dist, lThres, [param1,param2,param3], true);
+        
+        [params] = mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'lowerbound',[0 0 0],...
+            'options',op);
+        
+        warnings = catchSupressedWarnings(warnings);
+        
+        nll = sum(-logPdfToOptimize(data,params(1),params(2),params(3)));
+        cov = mlecov(params,data,'logpdf',logPdfToOptimize);
+        warnings = catchSupressedWarnings(warnings);
+        pd = prob.BurrDistribution.makeFitted(params,nll,cov,data,cens,freq);
+        warning('on','MATLAB:nearlySingularMatrix')
+        
+    case 'Generalized Pareto'
+        dist = 'generalized pareto';
+        if nargin < nArgsForNaiveFit
+            startParams = max(mle(data,'distribution', dist),0);
+        else
+            startParams = pdFit.ParameterValues;
+            startParams(3) =[];
+        end
+        %startParams=[startParams lThres];
+        logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, dist, lThres, [param1,param2], true);
+        
+        [params] = mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'lowerbound',[0 0],...
+            'options',op);
+        
+        warnings = catchSupressedWarnings(warnings);
+        nll = sum(-logPdfToOptimize(data,params(1),params(2)));
+        cov = mlecov(params,data,'logpdf',logPdfToOptimize);
+        warnings = catchSupressedWarnings(warnings);
+        params=[params lThres];
+        pd = prob.GeneralizedParetoDistribution.makeFitted(params,nll,cov,data,cens,freq);
+    case {'LgnormmixPSA','LgnormmixRSA'}
+        if nargin < nArgsForNaiveFit
+            startParams = [mean(log(data(data>0))) std(log(data(data>0)))];
+            
+            logPdfToOptimize = @(x,param1,param2) ...
+            truncDensity(x, 'Lognormal', lThres, [param1,param2], true);
+      
+            [params]= mle(data,...
+            'logpdf',logPdfToOptimize,...
+            'start',startParams,...
+            'options',op);
+        
+            if strcmp(dist,'LgnormmixRSA') 
+                [M1,S1,M2,S2,P] = MLE_LNMIX_RSA(data,lThres,params(1),params(2),params(1),params(2),0.5);
+            elseif strcmp(dist,'LgnormmixPSA')
+            [M1,S1,M2,S2,P] = MLE_LNMIX_PSA(data,lThres,params(1),params(2),params(1),params(2),0.5);    
+            else 
+            error('Choose an appropriate distribution')
+            end
+        
+        else %% Used in GoF tests
+            Params = pdFit.ParameterValues;
+            
+             if strcmp(dist,'LgnormmixRSA') 
+                [M1,S1,M2,S2,P] = MLE_LNMIX_RSA(data,lThres,Params(1),Params(2),Params(3),Params(4),Params(5));
+             elseif strcmp(dist,'LgnormmixPSA')
+                [M1,S1,M2,S2,P] = MLE_LNMIX_PSA(data,lThres,Params(1),Params(2),Params(3),Params(4),Params(5));    
+             else 
+                error('Choose an appropriate distribution')
+             end
+            
+            
+        end
+        % Get truncated pdf to optimize
+        % Compute truncated mle fit
+       
+      
+        
+        
+        
+       
+        
+        pd=LognormalMixtureClass([M1,S1,M2,S2,P],data);
+         
+    otherwise
+        me = MException('Severity:FitTruncatedDistributions',...
+            'Distribution name not recognized');
+        throw(me);
+        
+end
+
+% Test if distribution can be truncated (the probability mass above the
+% threshold should not be too close to 0)
+try
+    if ~strcmpi(pd.DistributionName,'gamma')
+        pd.truncate(lThres,Inf);
+    else
+        pd.truncate(log(lThres),Inf);
+    end
+catch err
+    warnings.ZeroProbability = err;
+end
+
+% Reset supressed warnings
+warning(InitialWarningState);
+
+end
+
+
+function warnings = catchSupressedWarnings(warnings)
+
+% Note: IterLimit warning will override EvalLimit warning
+[~,lastWarningId] = lastwarn;
+
+switch lastWarningId
+    case 'stats:mle:IterLimit'
+        warnings.IterLimit = MException('Aon:Severity:IterLimit',...
+            'Maximum likelihood estimation did not converge.  Iteration limit exceeded.');
+        
+    case 'stats:mle:EvalLimit'
+        warnings.EvalLimit = MException('Aon:Severity:EvalLimit',...
+            'Maximum likelihood estimation did not converge.  Function evaluation limit exceeded.');
+        
+    case 'stats:mlecov:NonPosDefHessian'
+        warnings.NonPosDefHessianMleCov = MException('Aon:Severity:mlecov:NonPosDefHessian',...
+            'Cannot compute a cov matrix -- the computed Hessian is not positive definite.');
+        
+    case 'stats:addburr:NonPosDefHessian'
+        warnings.NonPosDefHessianAddBurr = MException('Aon:Severity:addburr:NonPosDefHessian',...
+            'Cannot compute a cov matrix -- the computed Hessian is not positive definite.');
+        
+    case 'MATLAB:nearlySingularMatrix'
+        warnings.BurrNearlySingularMatrix = MException('Aon:Severity:Burr:NearlySingularMatrix',...
+            'Matrix is close to singular or badly scaled. Results may be inaccurate.');
+end
+
+lastwarn('')
+end
